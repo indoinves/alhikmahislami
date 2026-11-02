@@ -1,682 +1,537 @@
-import json
-import datetime
+#!/usr/bin/env python3
+"""
+AWDEV static blog generator  (untuk GitHub Pages: awdevmyid.github.io)
+
+Struktur output per kategori:
+  /<kategori>/index.html, artikel1..N.html, sitemap.html, sitemap.xml, sitemap.txt
+Global: /sitemap.xml, /robots.txt, /assets/style.css, /assets/app.js
+
+Isi artikel dibaca dari:  content/<kategori>/artikelN.json
+Halaman tanpa file JSON dibuat sebagai DRAFT: noindex + tidak masuk sitemap
+(supaya tidak ada halaman kosong/tipis yang diindeks Google).
+
+Pemakaian:
+  python generator.py --scaffold            # buat kerangka JSON untuk diisi
+  python generator.py                       # generate semua halaman
+  python generator.py --only property       # satu kategori saja
+  python generator.py --pages 30 --push     # generate lalu git commit + push
+"""
+import argparse, hashlib, html, json, subprocess
+from datetime import date
 from pathlib import Path
-from PIL import Image
 
-DOMAIN = "https://alhikmah.my.id"
-SITE_NAME = "ALHIKMAH"
-SITE_DESC = "ALHIKMAH: warta, kajian Islam, artikel budaya, dan tools Islami gratis (Al-Qur'an, jadwal sholat, kiblat, zakat)."
-GA_PUB_ID = "ca-pub-6718454554209533"
-GOOGLE_VERIFICATION_1 = "QT96Rd0InOuqkb4s1Wu5BlgGD_pCNOy8CsCtveF1zEA"
-GOOGLE_VERIFICATION_2 = "SumuNvHw_nB3fsevMIU9N_0Oi7YWb9ykHovu0gjAbso"
-THEME_COLOR = "#0b6b4f"
+# ----------------------------------------------------------------- CONFIG
+SITE = {
+    "base_url": "https://awdevmyid.github.io",
+    "name": "AWDEV CORPORATION",
+    "brand": "AWDEV CORP",
+    "logo": "https://awdev.my.id/img/awdev.png",
+    "favicon": "https://awdev.my.id/favicon.png",
+    "adsense_client": "ca-pub-5407249785989200",
+    "adsense_slot": "0000000000",  # ganti dengan ad slot ID banner Anda
+    "gsc_verification": "OLryKZ1dDupEH_xOuZWiEwdi0ZvuXMcnQeMjRwe5YCw",
+    "disqus": "awdevgithub",
+    "email": "support@awdev.my.id",
+    "year": date.today().year,
+}
 
-EMAIL = "hello@alhikmah.my.id"
-PHONE = "+62 812-3456-7890"
-ADDRESS = "Indonesia"
-WHATSAPP = "https://wa.me/6281234567890"
+CATEGORIES = (
+    ["aplikasi", "calligraphy", "code", "collor", "converter", "devoloper", "domain",
+     "domains", "eq", "finder", "hook", "img", "ip", "kodepost", "link", "maps", "pdf",
+     "qr", "quran", "removebg", "safelink", "search", "seo", "source", "text", "tools",
+     "utilities", "vidio", "market", "islamic"]
+    + ["market/" + c for c in [
+        "finance", "macro", "micro", "economy", "explainers", "manufacturing", "property",
+        "health", "education", "lifestyle", "hospitality", "tech", "media", "smes",
+        "luxury", "whos-who", "international", "local-resources"]]
+    + ["islamic/" + c for c in [
+        "biografi-ulama", "kisah-hikmah", "kisah-sejarah", "kisah-birrul-walidain",
+        "kisah-hidayah-islam", "kisah-kaum-durhaka", "kisah-masa-depan",
+        "kisah-nabi-dan-rasul", "kisah-nabi-muhammad", "kisah-nyata",
+        "kisah-orang-shalih", "kisah-pilihan", "kisah-sahabat-nabi", "kisah-tabiin",
+        "sejarah-islam", "nusantara"]]
+)
 
-SOCIAL_LINKS = [
-    ("Facebook", "https://facebook.com/alhikmah"),
-    ("Instagram", "https://instagram.com/alhikmah"),
-    ("X / Twitter", "https://twitter.com/alhikmah"),
-    ("YouTube", "https://youtube.com/@alhikmah"),
+NAV = [
+    ("Home", "/"), ("About", "/about.html"), ("Blog", "/blog.html"),
+    ("Tools", "/tools/index.html"), ("Aplikasi", "/aplikasi/index.html"),
+    ("SEO", "/seo/index.html"), ("Source", "/source/index.html"),
+    ("QR", "/qr/index.html"), ("Color", "/collor/index.html"),
+    ("Maps", "/maps/index.html"), ("Video", "/vidio/index.html"),
+    ("Islamic Tools", "/islamic-tools/index.html"), ("Converter", "/converter/index.html"),
 ]
 
-TOOLS_LIST = [
-    "Al-Qur'an", "Wirid & Do'a", "Jadwal Sholat", "Kalender Hijriyah", "Kalender Masehi",
-    "Kiblat", "Khutbah", "Yasin", "Tahlil", "Maulid", "Hizib", "Tafsir", "Hadist Bukhori",
-    "Hadist Muslim", "Fiqih", "Tasawuf", "Kisah Hikmah", "Maps Location", "Maps Ziarah",
-    "Haji Umroh", "Qurban", "Kalkulator Zakat", "Ramadhan", "Alhikmah Pedia",
-    "Arabic Keyboard", "Caligrafi Tools", "JSON Beautifier & Minifier",
-    "Base64 Encode/Decode", "Random Password Generator", "Morse Code Translator",
-    "HEX to RGB Converter"
+EXTERNAL_LINKS = [
+    ("GitHub", "https://github.com/"),
+    ("MDN Web Docs", "https://developer.mozilla.org/"),
+    ("Google Search Central", "https://developers.google.com/search"),
+    ("W3C", "https://www.w3.org/"),
+    ("Schema.org", "https://schema.org/"),
+    ("Wikipedia", "https://id.wikipedia.org/"),
+    ("Stack Overflow", "https://stackoverflow.com/"),
 ]
 
-ARTICLES = [
-    {
-        "title": "Panduan Sholat Sunnah di Bulan Ramadan",
-        "slug": "panduan-sholat-sunnah-bulan-ramadan",
-        "category": "Ramadhan",
-        "label": "Ramadan",
-        "year": 2026,
-        "date": "2026-11-01",
-        "read_time": "5 menit",
-        "excerpt": "Sholat sunnah di bulan Ramadan memiliki banyak keutamaan dan membantu memperkuat ibadah harian.",
-        "image": "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=900&q=80"
-    },
-    {
-        "title": "Makna Syukur Dalam Kehidupan Sehari-hari",
-        "slug": "makna-syukur-dalam-kehidupan-sehari-hari",
-        "category": "Kajian",
-        "label": "Akhlak",
-        "year": 2026,
-        "date": "2026-10-20",
-        "read_time": "6 menit",
-        "excerpt": "Syukur dan kesadaran spiritual menjadi fondasi untuk membangun kehidupan yang lebih damai.",
-        "image": "https://images.unsplash.com/photo-1515377905703-c4788e51af15?auto=format&fit=crop&w=900&q=80"
-    },
-    {
-        "title": "Kaligrafi Islam dan Nilai Estetika dalam Iman",
-        "slug": "kaligrafi-islam-dan-nilai-estetika-dalam-iman",
-        "category": "Seni",
-        "label": "Seni",
-        "year": 2025,
-        "date": "2025-12-15",
-        "read_time": "5 menit",
-        "excerpt": "Kaligrafi bukan hanya seni visual, tetapi juga ekspresi spiritual yang mengajak jiwa kepada ketenangan.",
-        "image": "https://images.unsplash.com/photo-1521587760476-6c12a4b040da?auto=format&fit=crop&w=900&q=80"
-    },
-    {
-        "title": "Panduan Praktis Menghafal Al-Qur'an",
-        "slug": "panduan-praktis-menghafal-al-quran",
-        "category": "Pustaka",
-        "label": "Al-Qur'an",
-        "year": 2025,
-        "date": "2025-11-11",
-        "read_time": "7 menit",
-        "excerpt": "Belajar menghafal Al-Qur'an memerlukan niat yang kuat, kedisiplinan, dan metode yang konsisten.",
-        "image": "https://images.unsplash.com/photo-1544717305-2782549b5136?auto=format&fit=crop&w=900&q=80"
-    }
+FOOTER_LINKS = [
+    ("Home", "/"), ("About Us", "/about.html"), ("Blog", "/blog.html"),
+    ("Contact", "/contact.html"), ("Privacy Policy", "/privacy-policy.html"),
+    ("Terms & Conditions", "/terms.html"), ("Disclaimers", "/disclaimers.html"),
+    ("License", "/license.html"),
 ]
 
-ASSET_DIR = Path("assets")
-LOGO_CANDIDATES = [
-    ASSET_DIR / "logo.png",
-    ASSET_DIR / "logo.jpg",
-    ASSET_DIR / "logo.jpeg",
-    Path("logo.png"),
-    Path("logo.jpg"),
-    Path("logo.jpeg"),
-]
-LOGO_URL = f"{DOMAIN}/images.jpg"
-FAVICON_URL = f"{DOMAIN}/favicon.png"
+ROOT = Path(__file__).parent
+OUT = ROOT            # tulis langsung ke root repo agar URL sesuai root
+CONTENT = ROOT / "content"
 
 
-def find_logo_source():
-    for p in LOGO_CANDIDATES:
-        if p.exists():
-            return p
-    raise FileNotFoundError("Logo tidak ditemukan. Simpan logo di assets/logo.png")
+# ----------------------------------------------------------------- HELPERS
+def e(s):
+    return html.escape(str(s), quote=True)
 
 
-def prepare_assets():
-    ASSET_DIR.mkdir(exist_ok=True)
-    source = find_logo_source()
-
-    with Image.open(source) as img:
-        if img.mode in ("RGBA", "LA", "P"):
-            img = img.convert("RGBA")
-        else:
-            img = img.convert("RGB")
-        img.save("images.jpg", "JPEG", quality=95)
-
-    with Image.open(source) as img:
-        if img.mode in ("RGBA", "LA", "P"):
-            img = img.convert("RGBA")
-        else:
-            img = img.convert("RGB")
-        img.thumbnail((256, 256))
-        img.save("favicon.png", "PNG")
+def label(slug):
+    return slug.split("/")[-1].replace("-", " ").title()
 
 
-def get_meta_tags(title, description, path="/"):
+def url(path):
+    return SITE["base_url"] + path
+
+
+def hash_rank(s):
+    return int(hashlib.md5(s.encode()).hexdigest(), 16)
+
+
+def load_article(cat, n):
+    f = CONTENT / cat / f"artikel{n}.json"
+    if f.exists():
+        d = json.loads(f.read_text(encoding="utf-8"))
+        d["draft"] = False
+    else:
+        d = {
+            "title": f"{label(cat)} - Artikel {n} (draft)",
+            "description": f"Draft artikel {n} kategori {label(cat)}.",
+            "date": "2026-01-01",
+            "image": SITE["logo"],
+            "image_alt": f"Ilustrasi {label(cat)}",
+            "intro": "Artikel ini belum ditulis.",
+            "sections": [],
+            "faq": [],
+            "conclusion": "",
+            "draft": True,
+        }
+    d["n"] = n
+    d["cat"] = cat
+    d["path"] = f"/{cat}/artikel{n}.html"
+    d.setdefault("date", "2026-01-01")
+    d.setdefault("image", SITE["logo"])
+    d.setdefault("image_alt", d["title"])
+    d.setdefault("description", d["title"])
+    return d
+
+
+def word_count(a):
+    txt = a.get("intro", "") + a.get("conclusion", "")
+    for s in a.get("sections", []):
+        txt += " ".join(s.get("paragraphs", []))
+        for sub in s.get("subsections", []):
+            txt += " ".join(sub.get("paragraphs", []))
+    return len(txt.split())
+
+
+# ----------------------------------------------------------------- ASSETS
+CSS = """
+:root{--bg:#e4ebf5;--dark:#c5d1e0;--light:#fff;--text:#333;--primary:#1a73e8;
+--rainbow:linear-gradient(135deg,#ff3366,#ff9933,#33cc66,#3399ff,#9933ff)}
+*{box-sizing:border-box;margin:0;padding:0;font-family:'Poppins',sans-serif}
+body{background:var(--bg);color:var(--text);line-height:1.7;padding:20px;max-width:1100px;margin:auto}
+a{color:#ff3366}
+.rainbow-bar{height:6px;background:var(--rainbow);border-radius:3px;margin-bottom:20px}
+.rtext{background:var(--rainbow);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.box{background:var(--bg);box-shadow:8px 8px 16px var(--dark),-8px -8px 16px var(--light);border-radius:16px;padding:20px;margin-bottom:30px}
+.inset{background:var(--bg);box-shadow:inset 4px 4px 8px var(--dark),inset -4px -4px 8px var(--light);border-radius:12px;padding:15px}
+.btn{background:var(--bg);box-shadow:5px 5px 10px var(--dark),-5px -5px 10px var(--light);border:0;border-radius:8px;padding:10px 20px;cursor:pointer;color:var(--text);font-weight:600;text-decoration:none;display:inline-block}
+.btn:hover{box-shadow:inset 3px 3px 6px var(--dark),inset -3px -3px 6px var(--light);color:#ff3366}
+header.box{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+.logo-area{display:flex;align-items:center;gap:15px;text-decoration:none}
+.logo-img{width:50px;height:50px;border-radius:50%;object-fit:cover}
+.logo-text{font-size:1.5rem;font-weight:700}
+.dropdown{position:relative}
+.dropbtn{background:var(--bg);box-shadow:5px 5px 10px var(--dark),-5px -5px 10px var(--light);padding:10px 18px;border:0;border-radius:10px;color:var(--primary);font-weight:600;cursor:pointer}
+.dropdown-content{display:none;position:absolute;right:0;background:var(--bg);min-width:230px;box-shadow:8px 8px 16px var(--dark);z-index:100;border-radius:12px;padding:10px 0;max-height:350px;overflow-y:auto}
+.dropdown:hover .dropdown-content,.dropdown.open .dropdown-content{display:block}
+.dropdown-content a{display:block;padding:9px 20px;color:var(--text);text-decoration:none;font-size:13px}
+.dropdown-content a:hover{color:#ff3366}
+h1{font-size:2rem;margin-bottom:10px}h2{margin:25px 0 10px}h3{margin:18px 0 8px;color:var(--primary)}
+p{margin-bottom:14px;text-align:justify}
+.hero img,.article img{max-width:100%;border-radius:12px;margin:10px 0}
+.meta{font-size:.85rem;color:#666;margin-bottom:10px}
+.toc ol{padding-left:22px}.toc li{margin-bottom:6px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:15px}
+.card{padding:15px;border-radius:10px;box-shadow:5px 5px 10px var(--dark),-5px -5px 10px var(--light)}
+.card img{width:100%;height:150px;object-fit:cover;border-radius:8px}
+.card h4{margin:8px 0}.card a{text-decoration:none}
+.labels a,.archive a{display:inline-block;margin:4px;padding:6px 14px;border-radius:20px;background:var(--bg);box-shadow:3px 3px 6px var(--dark),-3px -3px 6px var(--light);text-decoration:none;font-size:.85rem}
+.faq-item{margin-bottom:12px}.faq-q{font-weight:600;cursor:pointer;display:flex;justify-content:space-between}
+.faq-a{display:none;margin-top:8px;color:#555}.faq-item.active .faq-a{display:block}
+.share{display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
+.share a{padding:10px 16px;border-radius:25px;text-decoration:none;font-weight:600;background:var(--bg);box-shadow:5px 5px 10px var(--dark),-5px -5px 10px var(--light)}
+.contact input,.contact textarea{width:100%;padding:12px;margin-bottom:12px;border:0;border-radius:8px;background:var(--bg);box-shadow:inset 4px 4px 8px var(--dark),inset -4px -4px 8px var(--light);outline:0}
+.ad{text-align:center;min-height:90px;margin:20px 0}
+table{width:100%;border-collapse:collapse;margin:14px 0}th,td{padding:10px;border-bottom:1px solid #ccd5e3;text-align:left}
+footer{text-align:center;margin-top:40px;font-size:14px;color:#666}
+footer .links{display:flex;flex-wrap:wrap;gap:15px;justify-content:center;margin-top:10px}
+footer a{color:var(--primary);text-decoration:none}
+@media(max-width:768px){h1{font-size:1.6rem}}
+"""
+
+JS = """
+document.querySelectorAll('.faq-q').forEach(function(q){
+  q.addEventListener('click',function(){q.parentElement.classList.toggle('active');});
+});
+var dd=document.querySelector('.dropdown');
+if(dd){dd.querySelector('.dropbtn').addEventListener('click',function(){dd.classList.toggle('open');});}
+"""
+
+
+# ----------------------------------------------------------------- BLOCKS
+def head(title, desc, path, image, noindex=False, extra=""):
+    canon = url(path)
+    robots = '<meta name="robots" content="noindex,follow">' if noindex else \
+             '<meta name="robots" content="index,follow,max-image-preview:large">'
     return f"""<!DOCTYPE html>
-<html lang=\"id\">
-<head>
-    <meta charset=\"UTF-8\">
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
-    <title>{title}</title>
-    <meta name=\"description\" content=\"{description}\">
-    <link rel=\"icon\" href=\"{FAVICON_URL}\" type=\"image/png\">
-    <link rel=\"apple-touch-icon\" href=\"{LOGO_URL}\">
-    <link rel=\"manifest\" href=\"/manifest.json\">
-    <meta name=\"theme-color\" content=\"{THEME_COLOR}\">
-    <meta name=\"google-site-verification\" content=\"{GOOGLE_VERIFICATION_1}\">
-    <meta name=\"google-site-verification\" content=\"{GOOGLE_VERIFICATION_2}\">
-    <meta name=\"google-adsense-account\" content=\"{GA_PUB_ID}\">
-    <meta property=\"og:type\" content=\"website\">
-    <meta property=\"og:site_name\" content=\"{SITE_NAME}\">
-    <meta property=\"og:title\" content=\"{title}\">
-    <meta property=\"og:description\" content=\"{description}\">
-    <meta property=\"og:url\" content=\"{DOMAIN}{path}\">
-    <meta property=\"og:image\" content=\"{LOGO_URL}\">
-    <meta name=\"twitter:card\" content=\"summary_large_image\">
-    <meta name=\"twitter:title\" content=\"{title}\">
-    <meta name=\"twitter:description\" content=\"{description}\">
-    <meta name=\"twitter:image\" content=\"{LOGO_URL}\">
-    <script async src=\"https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={GA_PUB_ID}\" crossorigin=\"anonymous\"></script>
-    <link rel=\"stylesheet\" href=\"/css/style.css\">
-</head>
-<body>
+<html lang="id"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{e(title)} | {e(SITE['name'])}</title>
+<meta name="description" content="{e(desc[:160])}">
+<meta name="author" content="{e(SITE['name'])}">
+{robots}
+<link rel="canonical" href="{e(canon)}">
+<meta property="og:type" content="article"><meta property="og:url" content="{e(canon)}">
+<meta property="og:title" content="{e(title)}"><meta property="og:description" content="{e(desc[:160])}">
+<meta property="og:image" content="{e(image)}">
+<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="{e(title)}">
+<meta name="twitter:description" content="{e(desc[:160])}"><meta name="twitter:image" content="{e(image)}">
+<link rel="icon" type="image/png" href="{e(SITE['favicon'])}">
+<meta name="google-site-verification" content="{SITE['gsc_verification']}">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={SITE['adsense_client']}" crossorigin="anonymous"></script>
+<meta name="google-adsense-account" content="{SITE['adsense_client']}">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<link rel="stylesheet" href="/assets/style.css">
+{extra}
+</head><body>
+<div class="rainbow-bar"></div>
+{header_html()}
 """
 
 
 def header_html():
-    nav_links = (
-        "<a href='/'>Home</a>"
-        "<a href='/articles'>Artikel</a>"
-        "<a href='/warta'>Warta</a>"
-        "<a href='/nasional'>Nasional</a>"
-        "<a href='/daerah'>Daerah</a>"
-        "<a href='/internasional'>Internasional</a>"
-        "<a href='/risalah'>Risalah</a>"
-        "<a href='/redaksi'>Redaksi</a>"
-        "<a href='/tokoh'>Tokoh</a>"
-        "<a href='/hikmah'>Hikmah</a>"
-        "<a href='/kesehatan'>Kesehatan</a>"
-        "<a href='/cerpen'>Cerpen</a>"
-        "<a href='/puisi'>Puisi</a>"
-        "<a href='/pidato'>Pidato</a>"
-        "<a href='/khutbah'>Khutbah</a>"
-        "<a href='/seni'>Seni</a>"
-        "<a href='/budaya'>Budaya</a>"
-        "<a href='/ramadhan'>Ramadhan</a>"
-        "<a href='/pustaka'>Pustaka</a>"
-        "<a href='/humor'>Humor</a>"
-        "<a href='/tools'>Tools Islami</a>"
-        "<a href='/archive'>Archive</a>"
-        "<a href='/about'>About</a>"
-        "<a href='/contact'>Contact</a>"
-    )
-    return f"""
-    <header class=\"topbar\">
-        <div class=\"container topbar-inner\">
-            <div class=\"brand\">
-                <div class=\"brand-mark\"><img src=\"{LOGO_URL}\" alt=\"{SITE_NAME}\"></div>
-                <span>{SITE_NAME}</span>
-            </div>
-            <nav class=\"nav\">
-                {nav_links}
-            </nav>
-        </div>
-    </header>
-    """
+    links = "".join(f'<a href="{p}">{e(n)}</a>' for n, p in NAV)
+    return f"""<header class="box">
+<a class="logo-area" href="/"><img class="logo-img" src="{e(SITE['logo'])}" alt="Logo {e(SITE['name'])}">
+<span class="logo-text rtext">{e(SITE['brand'])}</span></a>
+<div class="dropdown"><button class="dropbtn" type="button"><i class="fas fa-bars"></i> Navigation Menu</button>
+<div class="dropdown-content">{links}</div></div></header>"""
 
 
 def footer_html():
-    return f"""
-    <footer>
-        <div class=\"container\">
-            <div class=\"footer-grid\">
-                <div>
-                    <div class=\"brand\" style=\"margin-bottom: 12px;\">
-                        <div class=\"brand-mark\"><img src=\"{LOGO_URL}\" alt=\"{SITE_NAME}\"></div>
-                        <span>{SITE_NAME}</span>
-                    </div>
-                    <p>{SITE_DESC}</p>
-                    <div class=\"share-box\" style=\"margin-top: 14px;\">
-                        <a href=\"https://facebook.com/sharer/sharer.php?u={DOMAIN}\" target=\"_blank\" rel=\"noreferrer\">Facebook</a>
-                        <a href=\"https://twitter.com/intent/tweet?url={DOMAIN}\" target=\"_blank\" rel=\"noreferrer\">Twitter</a>
-                        <a href=\"https://wa.me/?text={DOMAIN}\" target=\"_blank\" rel=\"noreferrer\">WhatsApp</a>
-                    </div>
-                </div>
-
-                <div>
-                    <h4>Navigasi</h4>
-                    <ul>
-                        <li><a href=\"/\">Beranda</a></li>
-                        <li><a href=\"/articles\">Artikel</a></li>
-                        <li><a href=\"/warta\">Warta</a></li>
-                        <li><a href=\"/khutbah\">Khutbah</a></li>
-                        <li><a href=\"/tools\">Tools</a></li>
-                    </ul>
-                </div>
-
-                <div>
-                    <h4>Kategori</h4>
-                    <ul>
-                        <li><a href=\"/nasional\">Nasional</a></li>
-                        <li><a href=\"/daerah\">Daerah</a></li>
-                        <li><a href=\"/internasional\">Internasional</a></li>
-                        <li><a href=\"/budaya\">Budaya</a></li>
-                        <li><a href=\"/ramadhan\">Ramadhan</a></li>
-                    </ul>
-                </div>
-
-                <div>
-                    <h4>Kontak</h4>
-                    <ul>
-                        <li>Email: <a href=\"mailto:{EMAIL}\">{EMAIL}</a></li>
-                        <li>WhatsApp: <a href=\"{WHATSAPP}\" target=\"_blank\" rel=\"noreferrer\">{PHONE}</a></li>
-                        <li>Alamat: {ADDRESS}</li>
-                    </ul>
-                </div>
-            </div>
-
-            <div class=\"footer-bottom\">
-                <span>© <span data-current-year>2026</span> {SITE_NAME}. All rights reserved.</span>
-                <span><a href=\"/privacy\">Privacy</a> · <a href=\"/terms\">Terms</a> · <a href=\"/contact\">Kontak</a></span>
-            </div>
-        </div>
-    </footer>
-    <script src=\"/js/app.js\" defer></script>
-    """
+    links = " | ".join(f'<a href="{p}">{e(n)}</a>' for n, p in FOOTER_LINKS)
+    return f"""<footer><div class="inset"><p>&copy; {SITE['year']} awdev. All rights reserved.</p>
+<p class="links">{links}</p></div></footer>
+<script src="/assets/app.js"></script></body></html>"""
 
 
-def slugify(value):
-    value = value.lower()
-    value = value.replace("&", "")
-    value = value.replace("(", "")
-    value = value.replace(")", "")
-    value = value.replace(" ", "-")
-    return value
+def ad_banner():
+    return f"""<div class="ad"><ins class="adsbygoogle" style="display:block"
+data-ad-client="{SITE['adsense_client']}" data-ad-slot="{SITE['adsense_slot']}"
+data-ad-format="auto" data-full-width-responsive="true"></ins>
+<script>(adsbygoogle=window.adsbygoogle||[]).push({{}});</script></div>"""
 
 
-def render_article_card(article):
-    return f"""
-    <article class=\"article-card\">
-        <img src=\"{article['image']}\" alt=\"{article['title']}\">
-        <div class=\"article-card-body\">
-            <div class=\"meta-row\">
-                <span class=\"pill\">{article['category']}</span>
-                <span>{article['date']}</span>
-                <span>{article['read_time']}</span>
-            </div>
-            <h3>{article['title']}</h3>
-            <p>{article['excerpt']}</p>
-            <a href=\"/articles/{article['slug']}.html\">Baca selengkapnya →</a>
-        </div>
-    </article>
-    """
+def share_html(a):
+    u, t = url(a["path"]), e(a["title"])
+    return f"""<section class="box"><h3>Bagikan Artikel</h3><div class="share">
+<a href="https://facebook.com/sharer/sharer.php?u={u}" target="_blank" rel="noopener"><i class="fab fa-facebook-f"></i> Facebook</a>
+<a href="https://twitter.com/intent/tweet?url={u}&text={t}" target="_blank" rel="noopener"><i class="fab fa-twitter"></i> Twitter</a>
+<a href="https://api.whatsapp.com/send?text={t}%20{u}" target="_blank" rel="noopener"><i class="fab fa-whatsapp"></i> WhatsApp</a>
+<a href="https://www.linkedin.com/shareArticle?mini=true&url={u}" target="_blank" rel="noopener"><i class="fab fa-linkedin-in"></i> LinkedIn</a>
+<a href="https://t.me/share/url?url={u}&text={t}" target="_blank" rel="noopener"><i class="fab fa-telegram"></i> Telegram</a>
+</div></section>"""
 
 
-def render_popular_item(article):
-    return f"""
-    <div class=\"mini-post\">
-        <img src=\"{article['image']}\" alt=\"{article['title']}\">
-        <div>
-            <h4>{article['title']}</h4>
-            <span>{article['date']}</span>
-        </div>
-    </div>
-    """
+def contact_html():
+    return f"""<section class="box contact"><h3 class="rtext">Hubungi Kami</h3>
+<form action="mailto:{e(SITE['email'])}" method="post" enctype="text/plain">
+<input type="text" name="nama" placeholder="Nama Anda" required>
+<input type="email" name="email" placeholder="Email Anda" required>
+<textarea name="pesan" rows="4" placeholder="Pesan Anda..." required></textarea>
+<button class="btn" type="submit" style="width:100%">Kirim Pesan</button></form></section>"""
 
 
-def build_homepage():
-    cards = "".join(render_article_card(a) for a in ARTICLES)
-    popular = "".join(render_popular_item(a) for a in ARTICLES[:3])
-    tags = "".join(f'<span class="tag">{tag}</span>' for tag in ["Ramadan", "Akhlak", "Al-Qur'an", "Seni", "Jumat", "Zakat"])
-    tool_links = "".join(f'<li><a href="/tools/{slugify(tool)}.html">{tool}</a></li>' for tool in TOOLS_LIST)
+def disqus_html(a):
+    return f"""<section class="box"><div id="disqus_thread"></div>
+<script>var disqus_config=function(){{this.page.url="{url(a['path'])}";this.page.identifier="{a['cat']}-{a['n']}";}};
+(function(){{var d=document,s=d.createElement('script');s.src='https://{SITE['disqus']}.disqus.com/embed.js';
+s.setAttribute('data-timestamp',+new Date());(d.head||d.body).appendChild(s);}})();</script></section>"""
 
-    return f"""{get_meta_tags(f\"{SITE_NAME} - Warta, Kajian, dan Tools Islami\", SITE_DESC, \"/\")}
-{header_html()}
-<section class=\"hero\">
-    <div class=\"container hero-inner\">
-        <div>
-            <div class=\"hero-badge\">Media Islam Terpadu</div>
-            <h1>Warta, kajian, dan inspirasi islami untuk kehidupan modern.</h1>
-            <p>{SITE_DESC}</p>
-            <div class=\"cta-row\">
-                <a href=\"/articles\" class=\"btn btn-primary\">Baca Artikel</a>
-                <a href=\"/tools\" class=\"btn btn-secondary\">Lihat Tools</a>
-            </div>
-        </div>
-        <div class=\"hero-card\">
-            <img src=\"{ARTICLES[0]['image']}\" alt=\"{ARTICLES[0]['title']}\">
-        </div>
-    </div>
-</section>
 
-<main class=\"container\">
-    <div class=\"main-layout\">
-        <section class=\"content-section\">
-            <div>
-                <div class=\"section-header\">
-                    <h2>Artikel Terbaru</h2>
-                    <a href=\"/articles\" class=\"more-link\">Lihat semua →</a>
-                </div>
-                <div class=\"card-grid\">
-                    {cards}
-                </div>
-            </div>
+def card(a):
+    return (f'<div class="card"><img src="{e(a["image"])}" alt="{e(a["image_alt"])}" loading="lazy">'
+            f'<h4><a href="{a["path"]}">{e(a["title"])}</a></h4>'
+            f'<div class="meta">{e(a["date"])}</div></div>')
 
-            <div>
-                <div class=\"section-header\">
-                    <h2>Artikel Terkait</h2>
-                    <a href=\"/articles\" class=\"more-link\">Semua artikel →</a>
-                </div>
-                <div class=\"card-grid\">
-                    {cards}
-                </div>
-            </div>
-        </section>
 
-        <aside class=\"sidebar\">
-            <div class=\"panel\">
-                <h3>Popular Post</h3>
-                <div class=\"popular-list\">
-                    {popular}
-                </div>
-            </div>
+def article_lists(a, arts):
+    real = [x for x in arts if not x["draft"]] or arts
+    newest = sorted(real, key=lambda x: x["date"], reverse=True)[:5]
+    oldest = sorted(real, key=lambda x: x["date"])[:5]
+    popular = sorted(real, key=lambda x: (-x.get("views", 0), hash_rank(x["path"])))[:5]
+    news = newest[:3]
+    def block(title, items):
+        return f'<section class="box"><h3>{title}</h3><div class="grid">{"".join(card(x) for x in items)}</div></section>'
+    years = sorted({x["date"][:4] for x in real}, reverse=True)
+    archive = "".join(f'<a href="/{a["cat"]}/sitemap.html#{y}">{y}</a>' for y in years)
+    labels = "".join(f'<a href="/{c}/index.html">{e(label(c))}</a>' for c in CATEGORIES[:24])
+    return (block("News Artikel", news) + block("Artikel Populer", popular) +
+            block("Artikel Terbaru", newest) + block("Artikel Terlama", oldest) +
+            f'<section class="box labels"><h3>Label</h3>{labels}</section>'
+            f'<section class="box archive"><h3>Archive</h3>{archive}</section>')
 
-            <div class=\"panel\">
-                <h3>Kategori</h3>
-                <ul class=\"list-links\">
-                    <li><a href=\"/nasional\">Nasional</a></li>
-                    <li><a href=\"/daerah\">Daerah</a></li>
-                    <li><a href=\"/internasional\">Internasional</a></li>
-                    <li><a href=\"/risalah\">Risalah</a></li>
-                    <li><a href=\"/redaksi\">Redaksi</a></li>
-                    <li><a href=\"/tokoh\">Tokoh</a></li>
-                </ul>
-            </div>
 
-            <div class=\"panel\">
-                <h3>Label</h3>
-                <div class=\"tag-list\">
-                    {tags}
-                </div>
-            </div>
+def internal_links(a, arts):
+    links = [("Beranda AWDEV", "/"), (f"Kategori {label(a['cat'])}", f"/{a['cat']}/index.html"),
+             ("Sitemap Kategori", f"/{a['cat']}/sitemap.html"), ("Blog", "/blog.html"),
+             ("Tools", "/tools/index.html")]
+    others = [x for x in arts if x["n"] != a["n"]][:2]
+    links += [(x["title"], x["path"]) for x in others]
+    links = links[:7]
+    i = 1
+    while len(links) < 7:
+        links.append((f"Kategori {label(CATEGORIES[i])}", f"/{CATEGORIES[i]}/index.html")); i += 1
+    return "<ul>" + "".join(f'<li><a href="{p}">{e(n)}</a></li>' for n, p in links) + "</ul>"
 
-            <div class=\"panel\">
-                <h3>Tools Islami</h3>
-                <ul class=\"list-links\">
-                    {tool_links}
-                </ul>
-            </div>
-        </aside>
-    </div>
+
+def external_links():
+    return "<ul>" + "".join(
+        f'<li><a href="{u}" target="_blank" rel="noopener">{e(n)}</a></li>'
+        for n, u in EXTERNAL_LINKS[:7]) + "</ul>"
+
+
+# ----------------------------------------------------------------- PAGES
+def render_article(a, arts):
+    toc, body = [], []
+    for i, s in enumerate(a.get("sections", []), 1):
+        sid = f"sec-{i}"
+        toc.append(f'<li><a href="#{sid}">{e(s["h2"])}</a></li>')
+        part = f'<h2 id="{sid}">{e(s["h2"])}</h2>'
+        if s.get("image"):
+            part += f'<img src="{e(s["image"])}" alt="{e(s.get("image_alt", s["h2"]))}" loading="lazy">'
+        part += "".join(f"<p>{e(p)}</p>" for p in s.get("paragraphs", []))
+        for sub in s.get("subsections", []):
+            part += f'<h3>{e(sub["h3"])}</h3>' + "".join(f"<p>{e(p)}</p>" for p in sub.get("paragraphs", []))
+        if s.get("table"):
+            t = s["table"]
+            part += ("<table><thead><tr>" + "".join(f"<th>{e(h)}</th>" for h in t["headers"]) +
+                     "</tr></thead><tbody>" +
+                     "".join("<tr>" + "".join(f"<td>{e(c)}</td>" for c in r) + "</tr>" for r in t["rows"]) +
+                     "</tbody></table>")
+        body.append(part)
+        if i == 2:
+            body.append(ad_banner())
+
+    faq = a.get("faq", [])
+    faq_html = "".join(f'<div class="faq-item"><div class="faq-q">{e(q["q"])} <i class="fas fa-chevron-down"></i></div>'
+                       f'<div class="faq-a">{e(q["a"])}</div></div>' for q in faq)
+    toc_extra = ('<li><a href="#faq">FAQ</a></li>' if faq else "") + \
+                ('<li><a href="#kesimpulan">Kesimpulan</a></li>' if a.get("conclusion") else "")
+
+    schema = {"@context": "https://schema.org", "@type": "Article", "headline": a["title"],
+              "description": a["description"], "image": a["image"], "datePublished": a["date"],
+              "dateModified": a.get("modified", a["date"]),
+              "author": {"@type": "Organization", "name": SITE["name"]},
+              "publisher": {"@type": "Organization", "name": SITE["name"],
+                            "logo": {"@type": "ImageObject", "url": SITE["logo"]}},
+              "mainEntityOfPage": url(a["path"])}
+    ld = f'<script type="application/ld+json">{json.dumps(schema, ensure_ascii=False)}</script>'
+    if faq:
+        ld += '<script type="application/ld+json">' + json.dumps({
+            "@context": "https://schema.org", "@type": "FAQPage",
+            "mainEntity": [{"@type": "Question", "name": q["q"],
+                            "acceptedAnswer": {"@type": "Answer", "text": q["a"]}} for q in faq]},
+            ensure_ascii=False) + "</script>"
+
+    draft_note = '<div class="inset"><b>DRAFT:</b> isi artikel belum ditulis (noindex).</div>' if a["draft"] else ""
+    page = head(a["title"], a["description"], a["path"], a["image"], a["draft"], ld)
+    page += f"""<main><article class="box article">
+<nav class="meta"><a href="/">Home</a> / <a href="/{a['cat']}/index.html">{e(label(a['cat']))}</a> / Artikel {a['n']}</nav>
+<h1 class="rtext">{e(a['title'])}</h1>
+<div class="meta">Dipublikasikan {e(a['date'])} &middot; {word_count(a)} kata</div>
+{draft_note}
+<img src="{e(a['image'])}" alt="{e(a['image_alt'])}">
+<p>{e(a.get('intro', ''))}</p>
+{ad_banner()}
+<section class="inset toc"><h3>Daftar Isi</h3><ol>{"".join(toc)}{toc_extra}</ol></section>
+{"".join(body)}
+{f'<h2 id="faq">FAQ</h2>{faq_html}' if faq else ''}
+{f'<h2 id="kesimpulan">Kesimpulan</h2><p>{e(a["conclusion"])}</p>' if a.get('conclusion') else ''}
+<div class="grid"><div class="card"><h4>Internal Links</h4>{internal_links(a, arts)}</div>
+<div class="card"><h4>Referensi Eksternal</h4>{external_links()}</div></div>
+</article>
+{share_html(a)}
+{article_lists(a, arts)}
+{contact_html()}
+{disqus_html(a)}
 </main>
-
-{footer_html()}
-</body>
-</html>
 """
+    return page + footer_html()
 
 
-def build_article_page(article):
-    return f"""{get_meta_tags(article['title'], article['excerpt'], f\"/articles/{article['slug']}.html\")}
-{header_html()}
-<main class=\"container\" style=\"padding:40px 0 60px;\">
-    <div class=\"main-layout\">
-        <article class=\"content-section\">
-            <div class=\"panel\">
-                <img src=\"{article['image']}\" alt=\"{article['title']}\" style=\"width:100%; height:420px; object-fit:cover;\">
-                <div style=\"padding:22px;\">
-                    <div class=\"meta-row\">
-                        <span class=\"pill\">{article['category']}</span>
-                        <span>{article['date']}</span>
-                        <span>{article['read_time']}</span>
-                    </div>
-                    <h1 style=\"font-size: clamp(2rem, 3vw, 2.8rem); margin: 10px 0 18px;\">{article['title']}</h1>
-                    <p>{article['excerpt']}</p>
-                    <div style=\"font-size:1rem; line-height:1.9; color:#33463f;\">
-                        <p>Setiap manusia membutuhkan ruang untuk menenangkan hati dan memperbaiki diri. Dalam konteks Islam, rutinitas ibadah, refleksi, dan akhlak yang baik menjadi pilar utama dalam membangun kehidupan yang lebih bermakna.</p>
-                        <p>Islam mengajarkan agar setiap tindakan dilakukan dengan niat yang lurus dan tujuan yang jelas. Kesadaran spiritual yang dibangun secara konsisten akan membentuk karakter yang lebih baik dan lebih tenang.</p>
-                        <p>Dengan menjaga kebersihan hati, memperbanyak dzikir, dan menghormati sesama, kita dapat meraih kehidupan yang lebih seimbang, lebih damai, dan lebih bermanfaat.</p>
-                    </div>
-                </div>
-            </div>
-        </article>
-
-        <aside class=\"sidebar\">
-            <div class=\"panel\">
-                <h3>Popular Post</h3>
-                <div class=\"popular-list\">
-                    {''.join(render_popular_item(a) for a in ARTICLES[:3])}
-                </div>
-            </div>
-
-            <div class=\"panel\">
-                <h3>Bagikan</h3>
-                <div class=\"share-box\">
-                    <a href=\"https://facebook.com/sharer/sharer.php?u={DOMAIN}/articles/{article['slug']}.html\" target=\"_blank\" rel=\"noreferrer\">Facebook</a>
-                    <a href=\"https://twitter.com/intent/tweet?url={DOMAIN}/articles/{article['slug']}.html\" target=\"_blank\" rel=\"noreferrer\">Twitter</a>
-                    <a href=\"https://wa.me/?text={DOMAIN}/articles/{article['slug']}.html\" target=\"_blank\" rel=\"noreferrer\">WhatsApp</a>
-                </div>
-            </div>
-        </aside>
-    </div>
-</main>
-
-{footer_html()}
-</body>
-</html>
-"""
+def render_index(cat, arts):
+    path = f"/{cat}/index.html"
+    title = f"{label(cat)} - Artikel & Panduan"
+    desc = f"Kumpulan artikel {label(cat)} dari {SITE['name']}."
+    a = {"cat": cat, "n": 0, "path": path, "title": title}
+    real = [x for x in arts if not x["draft"]]
+    page = head(title, desc, path, SITE["logo"], noindex=not real)
+    page += f"""<main><section class="box"><h1 class="rtext">{e(label(cat))}</h1><p>{e(desc)}</p>
+<a class="btn" href="/{cat}/sitemap.html">Sitemap</a></section>{ad_banner()}
+<section class="box"><h2>Semua Artikel</h2><div class="grid">{"".join(card(x) for x in arts)}</div></section>
+{share_html(a)}{contact_html()}</main>"""
+    return page + footer_html()
 
 
-def build_tools_page(title, description, script_name=""):
-    scripts = f'<script src="/js/{script_name}" defer></script>' if script_name else ""
-    return f"""{get_meta_tags(title, description, \"/tools\")}
-{header_html()}
-<main class=\"container\" style=\"padding:40px 0 60px;\">
-    <div class=\"panel\">
-        <h1>{title}</h1>
-        <p>{description}</p>
-        {render_tool_content(title, script_name)}
-    </div>
-</main>
-{footer_html()}
-{scripts}
-</body>
-</html>
-"""
+def render_sitemap_html(cat, arts):
+    path = f"/{cat}/sitemap.html"
+    title = f"Sitemap {label(cat)}"
+    items = "".join(f'<li><a href="{x["path"]}">{e(x["title"])}</a></li>' for x in arts)
+    page = head(title, title, path, SITE["logo"])
+    page += f'<main><section class="box"><h1 class="rtext">{e(title)}</h1><ul>{items}</ul></section></main>'
+    return page + footer_html()
 
 
-def render_tool_content(title, script_name):
-    if title == "Al-Qur'an":
-        return """
-        <div id=\"quran-app\">
-            <input id=\"quran-search\" type=\"text\" placeholder=\"Cari surah...\" style=\"width:100%; padding:12px 14px; border:1px solid #dfe7e1; border-radius:10px; margin-bottom:12px;\">
-            <div id=\"selected-surah-title\" style=\"font-weight:700; margin-bottom:10px;\"></div>
-            <div id=\"surah-list\" class=\"tool-grid\"></div>
-            <div id=\"verse-output\" style=\"margin-top: 20px;\"></div>
-        </div>
-        """
-    if title == "Jadwal Sholat":
-        return """
-        <div id=\"prayer-app\">
-            <select id=\"city-select\" style=\"width:100%; padding:12px 14px; border:1px solid #dfe7e1; border-radius:10px; margin-bottom:12px;\"></select>
-            <div id=\"prayer-results\"></div>
-        </div>
-        """
-    if title == "Kalender Hijriyah":
-        return """
-        <div id=\"hijri-app\">
-            <label for=\"hijri-month\">Bulan</label>
-            <select id=\"hijri-month\" style=\"width:100%; padding:12px 14px; border:1px solid #dfe7e1; border-radius:10px; margin-bottom:12px;\"></select>
-            <label for=\"hijri-year\">Tahun</label>
-            <input id=\"hijri-year\" type=\"number\" value=\"1446\" style=\"width:100%; padding:12px 14px; border:1px solid #dfe7e1; border-radius:10px; margin-bottom:12px;\">
-            <label for=\"hijri-city\">Kota</label>
-            <select id=\"hijri-city\" style=\"width:100%; padding:12px 14px; border:1px solid #dfe7e1; border-radius:10px; margin-bottom:12px;\"></select>
-            <div id=\"hijri-output\"></div>
-        </div>
-        """
-    if title == "Kalkulator Zakat":
-        return """
-        <div id=\"zakat-app\">
-            <form id=\"zakat-form\" class=\"form-box\">
-                <label for=\"income\">Penghasilan</label>
-                <input id=\"income\" type=\"number\" value=\"0\">
-                <label for=\"savings\">Tabungan</label>
-                <input id=\"savings\" type=\"number\" value=\"0\">
-                <label for=\"gold\">Emas / Perhiasan</label>
-                <input id=\"gold\" type=\"number\" value=\"0\">
-                <label for=\"debt\">Utang</label>
-                <input id=\"debt\" type=\"number\" value=\"0\">
-                <label for=\"family\">Kewajiban Keluarga</label>
-                <input id=\"family\" type=\"number\" value=\"0\">
-                <button type=\"submit\">Hitung Zakat</button>
-            </form>
-            <div id=\"zakat-result\"></div>
-        </div>
-        """
-    return """
-    <div class=\"tool-card\">
-        <h3>Tool ini sedang dikembangkan</h3>
-        <p>Versi lengkap untuk tools ini akan ditambahkan di tahap berikutnya.</p>
-    </div>
-    """
+def sitemap_xml(urls):
+    rows = "".join(f"<url><loc>{e(u)}</loc><lastmod>{d}</lastmod></url>" for u, d in urls)
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{rows}</urlset>')
 
 
-def generate_pages():
-    Path("index.html").write_text(build_homepage(), encoding="utf-8")
+# ----------------------------------------------------------------- MAIN
+def scaffold(cats, pages):
+    for cat in cats:
+        d = CONTENT / cat
+        d.mkdir(parents=True, exist_ok=True)
+        for n in range(1, pages + 1):
+            f = d / f"artikel{n}.json"
+            if f.exists():
+                continue
+            f.write_text(json.dumps({
+                "title": "", "description": "", "date": date.today().isoformat(),
+                "image": "", "image_alt": "", "intro": "",
+                "sections": [{"h2": "", "paragraphs": [""],
+                              "subsections": [{"h3": "", "paragraphs": [""]}],
+                              "table": {"headers": [], "rows": []}}],
+                "faq": [{"q": "", "a": ""}], "conclusion": ""
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Scaffold dibuat di {CONTENT}")
 
-    articles_dir = Path("articles")
-    articles_dir.mkdir(exist_ok=True)
-    for article in ARTICLES:
-        Path(articles_dir / f"{article['slug']}.html").write_text(build_article_page(article), encoding="utf-8")
 
-    for category in ["warta", "nasional", "daerah", "internasional", "risalah", "redaksi", "obituari", "tokoh", "hikmah", "kesehatan", "cerpen", "puisi", "pidato", "khutbah", "seni", "budaya", "ramadhan", "pustaka", "humor"]:
-        folder = Path(category)
-        folder.mkdir(exist_ok=True)
-        page = folder / "index.html"
-        page.write_text(
-            f"""{get_meta_tags(f\"{category.title()} - {SITE_NAME}\", f\"{category.title()} {SITE_NAME}\", f\"/{category}/\")}
-{header_html()}
-<main class=\"container\" style=\"padding:40px 0 60px;\">
-    <div class=\"panel\">
-        <h1>{category.title()}</h1>
-        <p>Halaman {category.title()} sedang dikembangkan.</p>
-    </div>
-</main>
-{footer_html()}
-</body></html>""",
-            encoding="utf-8"
-        )
+def build(cats, pages):
+    (OUT / "assets").mkdir(exist_ok=True)
+    (OUT / "assets" / "style.css").write_text(CSS.strip(), encoding="utf-8")
+    (OUT / "assets" / "app.js").write_text(JS.strip(), encoding="utf-8")
+    all_urls, drafts = [], 0
+    for cat in cats:
+        arts = [load_article(cat, n) for n in range(1, pages + 1)]
+        d = OUT / cat
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "index.html").write_text(render_index(cat, arts), encoding="utf-8")
+        for a in arts:
+            (d / f"artikel{a['n']}.html").write_text(render_article(a, arts), encoding="utf-8")
+        (d / "sitemap.html").write_text(render_sitemap_html(cat, arts), encoding="utf-8")
+        live = [(url(x["path"]), x["date"]) for x in arts if not x["draft"]]
+        drafts += sum(1 for x in arts if x["draft"])
+        cat_urls = [(url(f"/{cat}/index.html"), date.today().isoformat())] + live
+        (d / "sitemap.xml").write_text(sitemap_xml(cat_urls), encoding="utf-8")
+        (d / "sitemap.txt").write_text("\n".join(u for u, _ in cat_urls), encoding="utf-8")
+        all_urls += cat_urls
+    (OUT / "sitemap.xml").write_text(sitemap_xml(all_urls), encoding="utf-8")
+    root_pages(cats, all_urls)
+    print(f"Selesai: {len(cats)} kategori, {len(all_urls)} URL di sitemap, {drafts} halaman draft (noindex).")
 
-    tools_dir = Path("tools")
-    tools_dir.mkdir(exist_ok=True)
-    tool_map = {
-        "Al-Qur'an": ("Al-Qur'an", "Akses surah dan ayat Al-Qur'an dalam format sederhana.", "quran.js"),
-        "Jadwal Sholat": ("Jadwal Sholat", "Jadwal sholat berdasarkan kota pilihan Anda.", "prayer.js"),
-        "Kalender Hijriyah": ("Kalender Hijriyah", "Lihat kalender Hijriah dan tanggal umum.", "hijri.js"),
-        "Kalkulator Zakat": ("Kalkulator Zakat", "Hitung zakat berdasarkan penghasilan, tabungan, emas, dan kewajiban.", "zakat.js"),
-    }
 
-    for tool_name, (title, desc, script_name) in tool_map.items():
-        slug = slugify(tool_name)
-        tool_path = tools_dir / f"{slug}.html"
-        tool_path.write_text(build_tools_page(title, desc, script_name), encoding="utf-8")
+LEGAL = {
+    "about": ("About Us", ["AWDEV adalah inisiatif proyek open source berisi tools, aplikasi, dan artikel untuk developer, desainer, dan programmer."]),
+    "contact": ("Contact", [f"Hubungi kami melalui email {SITE['email']}."]),
+    "privacy-policy": ("Privacy Policy", [
+        "Situs ini menggunakan Google AdSense. Google dan mitra iklannya dapat menggunakan cookie untuk menayangkan iklan berdasarkan kunjungan Anda ke situs ini dan situs lain.",
+        "Anda dapat mengelola personalisasi iklan melalui pengaturan iklan Google. Tools yang berjalan di browser (misalnya Salah Tracker) menyimpan data hanya di perangkat Anda (localStorage).",
+        "Tools berbasis lokasi meminta izin lokasi browser; koordinat dikirim ke layanan pihak ketiga (Open-Meteo, OpenStreetMap/Overpass, Al-Quran Cloud) hanya untuk fungsi tool tersebut."]),
+    "terms": ("Terms & Conditions", ["Dengan memakai situs ini Anda setuju bahwa konten dan tools disediakan apa adanya tanpa jaminan."]),
+    "disclaimers": ("Disclaimers", [
+        "Informasi bersifat umum dan edukatif. Untuk hukum syariah (zakat, waktu salat, status halal), rujuklah ulama atau lembaga resmi seperti BAZNAS, Kemenag, dan BPJPH.",
+        "Hasil perhitungan tools adalah estimasi, bukan nasihat keuangan, hukum, atau medis."]),
+    "license": ("License", ["Kode sumber dibagikan sebagai open source. Konten artikel tetap milik penulisnya."]),
+}
 
-    for tool_name in TOOLS_LIST:
-        slug = slugify(tool_name)
-        tool_path = tools_dir / f"{slug}.html"
-        if not tool_path.exists():
-            tool_path.write_text(build_tools_page(tool_name, f"Halaman {tool_name} untuk {SITE_NAME}.", ""), encoding="utf-8")
 
-    contact_dir = Path("contact")
-    contact_dir.mkdir(exist_ok=True)
-    Path(contact_dir / "index.html").write_text(
-        f"""{get_meta_tags("Kontak - ALHIKMAH", "Kontak ALHIKMAH untuk kerja sama dan pertanyaan.", "/contact/")}
-{header_html()}
-<main class=\"container\" style=\"padding:40px 0 60px;\">
-    <div class=\"panel\">
-        <h1>Kontak</h1>
-        <p>Email: <a href=\"mailto:{EMAIL}\">{EMAIL}</a></p>
-        <p>WhatsApp: <a href=\"{WHATSAPP}\" target=\"_blank\" rel=\"noreferrer\">{PHONE}</a></p>
-        <p>Alamat: {ADDRESS}</p>
-        <ul>
-            {''.join(f'<li><a href="{url}" target="_blank" rel="noreferrer">{name}</a></li>' for name, url in SOCIAL_LINKS)}
-        </ul>
-    </div>
-</main>
-{footer_html()}
-</body></html>""",
-        encoding="utf-8"
-    )
+def simple_page(path, title, desc, body_html, only_if_missing=True):
+    f = OUT / path.lstrip("/")
+    if only_if_missing and f.exists():
+        return
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(head(title, desc, path, SITE["logo"]) +
+                 f'<main><section class="box">{body_html}</section></main>' + footer_html(),
+                 encoding="utf-8")
 
-    about_dir = Path("about")
-    about_dir.mkdir(exist_ok=True)
-    Path(about_dir / "index.html").write_text(
-        f"""{get_meta_tags("About - ALHIKMAH", "Tentang ALHIKMAH", "/about/")}
-{header_html()}
-<main class=\"container\" style=\"padding:40px 0 60px;\">
-    <div class=\"panel\">
-        <h1>Tentang ALHIKMAH</h1>
-        <p>ALHIKMAH adalah platform ulama, kajian, media, dan tools Islami yang dibuat untuk membantu umat dalam mempelajari Islam secara praktis dan bermanfaat.</p>
-    </div>
-</main>
-{footer_html()}
-</body></html>""",
-        encoding="utf-8"
-    )
 
-    archive_dir = Path("archive")
-    archive_dir.mkdir(exist_ok=True)
-    for year in [2023, 2024, 2025, 2026]:
-        page = archive_dir / f"{year}.html"
-        page.write_text(
-            f"""{get_meta_tags(f\"Arsip {year} - {SITE_NAME}\", f\"Arsip {year} {SITE_NAME}\", f\"/archive/{year}.html\")}
-{header_html()}
-<main class=\"container\" style=\"padding:40px 0 60px;\">
-    <div class=\"panel\">
-        <h1>Arsip {year}</h1>
-        <ul>
-            {''.join(f'<li><a href="/articles/{a["slug"]}.html">{a["title"]}</a></li>' for a in ARTICLES if a["year"] == year)}
-        </ul>
-    </div>
-</main>
-{footer_html()}
-</body></html>""",
-            encoding="utf-8"
-        )
+def root_pages(cats, all_urls):
+    today = date.today().isoformat()
+    # sitemap.html / .txt
+    items = "".join(f'<li><a href="/{c}/index.html">{e(label(c))}</a> <small>/{e(c)}/</small></li>' for c in cats)
+    simple_page("/sitemap.html", "Sitemap", "Peta situs AWDEV",
+                f'<h1 class="rtext">Sitemap</h1><ul>{items}</ul>', only_if_missing=False)
+    (OUT / "sitemap.txt").write_text("\n".join(u for u, _ in all_urls), encoding="utf-8")
+    # robots.txt
+    lines = f"User-agent: *\nAllow: /\nSitemap: {url('/sitemap.xml')}\n"
+    if (OUT / "sitemap-tools.xml").exists():
+        lines += f"Sitemap: {url('/sitemap-tools.xml')}\n"
+    (OUT / "robots.txt").write_text(lines, encoding="utf-8")
+    # ads.txt + manifest
+    pub = SITE["adsense_client"].replace("ca-", "")
+    (OUT / "ads.txt").write_text(f"google.com, {pub}, DIRECT, f08c47fec0942fa0\n", encoding="utf-8")
+    (OUT / "manifest.json").write_text(json.dumps({
+        "name": SITE["name"], "short_name": SITE["brand"], "start_url": "/", "display": "standalone",
+        "background_color": "#e4ebf5", "theme_color": "#1a73e8",
+        "icons": [{"src": SITE["logo"], "sizes": "192x192", "type": "image/png"}]},
+        indent=2), encoding="utf-8")
+    # halaman pendukung (tidak menimpa file yang sudah ada)
+    for slug, (t, paras) in LEGAL.items():
+        simple_page(f"/{slug}.html", t, t, f'<h1 class="rtext">{e(t)}</h1>' + "".join(f"<p>{e(p)}</p>" for p in paras))
+    grid = "".join(f'<div class="card"><h4><a href="/{c}/index.html">{e(label(c))}</a></h4></div>' for c in cats)
+    simple_page("/blog.html", "Blog", "Semua kategori blog AWDEV",
+                f'<h1 class="rtext">Blog</h1><div class="grid">{grid}</div>')
+    # index.html root HANYA dibuat jika belum ada (home Anda tidak ditimpa)
+    simple_page("/index.html", SITE["name"], "AWDEV free open source tools",
+                f'<h1 class="rtext">{e(SITE["name"])}</h1><div class="grid">{grid}</div>')
 
-    Path("404.html").write_text(
-        f"""{get_meta_tags("404 - Not Found", "Halaman tidak ditemukan.", "/404.html")}
-{header_html()}
-<main class=\"container\" style=\"padding:40px 0 60px;\">
-    <div class=\"panel\">
-        <h1>404 - Tidak Ditemukan</h1>
-        <p>Halaman yang Anda cari tidak tersedia. Kembali ke <a href=\"/\">Beranda</a>.</p>
-    </div>
-</main>
-{footer_html()}
-</body></html>""",
-        encoding="utf-8"
-    )
 
-    Path("manifest.json").write_text(json.dumps({
-        "name": SITE_NAME,
-        "short_name": SITE_NAME,
-        "start_url": "/",
-        "display": "standalone",
-        "background_color": "#ffffff",
-        "theme_color": THEME_COLOR,
-        "icons": [{"src": LOGO_URL, "sizes": "200x200", "type": "image/jpeg"}]
-    }, indent=4), encoding="utf-8")
-
-    Path("robots.txt").write_text("User-agent: *\nAllow: /\nSitemap: https://alhikmah.my.id/sitemap.xml", encoding="utf-8")
-    Path("sitemap.xml").write_text(
-        """<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">
-  <url><loc>https://alhikmah.my.id/</loc><lastmod>2026-11-01</lastmod><changefreq>daily</changefreq><priority>1.0</priority></url>
-</urlset>""",
-        encoding="utf-8"
-    )
-    Path("rss.xml").write_text(
-        f"""<?xml version=\"1.0\" encoding=\"UTF-8\" ?>
-<rss version=\"2.0\">
-<channel>
-    <title>{SITE_NAME}</title>
-    <link>{DOMAIN}</link>
-    <description>{SITE_DESC}</description>
-    <language>id-id</language>
-    {''.join(f'<item><title>{a["title"]}</title><link>{DOMAIN}/articles/{a["slug"]}.html</link><description>{a["excerpt"]}</description></item>' for a in ARTICLES)}
-</channel>
-</rss>""",
-        encoding="utf-8"
-    )
-    Path("atom.xml").write_text(
-        f"""<?xml version=\"1.0\" encoding=\"utf-8\"?>
-<feed xmlns=\"http://www.w3.org/2005/Atom\">
-  <title>{SITE_NAME}</title>
-  <link href=\"{DOMAIN}/atom.xml\" rel=\"self\" />
-  <link href=\"{DOMAIN}\" />
-  <updated>{datetime.datetime.now().isoformat()}</updated>
-  <id>{DOMAIN}/</id>
-  {''.join(f'<entry><title>{a["title"]}</title><link href="{DOMAIN}/articles/{a["slug"]}.html" /><id>{DOMAIN}/articles/{a["slug"]}.html</id><summary>{a["excerpt"]}</summary></entry>' for a in ARTICLES)}
-</feed>""",
-        encoding="utf-8"
-    )
-    Path("ads.txt").write_text(f"google.com, {GA_PUB_ID}, DIRECT, f08c47fec0942fa0", encoding="utf-8")
-    Path("app-ads.txt").write_text(f"google.com, {GA_PUB_ID}, DIRECT, f08c47fec0942fa0", encoding="utf-8")
-    Path("README.md").write_text("# ALHIKMAH\n\nPortal Islami dengan blog dan tools Islami.\n", encoding="utf-8")
-    Path("LICENSE").write_text("MIT License\n\nCopyright (c) 2026 Alhikmah", encoding="utf-8")
+def push(msg):
+    for cmd in (["git", "add", "-A"], ["git", "commit", "-m", msg], ["git", "push", "origin", "HEAD"]):
+        r = subprocess.run(cmd, cwd=ROOT)
+        if r.returncode and cmd[1] != "commit":
+            raise SystemExit(f"Gagal: {' '.join(cmd)}")
 
 
 if __name__ == "__main__":
-    prepare_assets()
-    generate_pages()
-    print("ALHIKMAH static portal created successfully.")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pages", type=int, default=30, help="jumlah artikel per kategori")
+    ap.add_argument("--only", help="satu kategori saja (slug)")
+    ap.add_argument("--scaffold", action="store_true", help="buat kerangka JSON")
+    ap.add_argument("--push", action="store_true", help="git add/commit/push setelah build")
+    args = ap.parse_args()
+    cats = [args.only] if args.only else CATEGORIES
+    if args.scaffold:
+        scaffold(cats, args.pages)
+    else:
+        build(cats, args.pages)
+        if args.push:
+            push("Generate blog pages")
